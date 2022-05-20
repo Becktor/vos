@@ -13,6 +13,8 @@ from tqdm import tqdm
 from models.allconv import AllConvNet
 from models.wrn_virtual import WideResNet
 from models.densenet import DenseNet3
+from data_loader import ShippingLabClassification, Cifar10_Imbalanced
+from tqdm import tqdm
 
 # go through rigamaroo to do ...utils.display_results import show_performance
 if __package__ is None:
@@ -24,18 +26,18 @@ if __package__ is None:
 
 parser = argparse.ArgumentParser(description='Trains a CIFAR Classifier',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100'],
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'ships', 'imbacifar'],
                     default='cifar10',
                     help='Choose between CIFAR-10, CIFAR-100.')
-parser.add_argument('--model', '-m', type=str, default='dense',
+parser.add_argument('--model', '-m', type=str, default='wrn',
                     choices=['allconv', 'wrn', 'dense'], help='Choose architecture.')
 parser.add_argument('--calibration', '-c', action='store_true',
                     help='Train a model to be used for calibration. This holds out some data for validation.')
 # Optimization options
 parser.add_argument('--epochs', '-e', type=int, default=100, help='Number of epochs to train.')
 parser.add_argument('--learning_rate', '-lr', type=float, default=0.1, help='The initial learning rate.')
-parser.add_argument('--batch_size', '-b', type=int, default=128, help='Batch size.')
-parser.add_argument('--test_bs', type=int, default=200)
+parser.add_argument('--batch_size', '-b', type=int, default=64, help='Batch size.')
+parser.add_argument('--test_bs', type=int, default=128)
 parser.add_argument('--momentum', type=float, default=0.9, help='Momentum.')
 parser.add_argument('--decay', '-d', type=float, default=0.0001, help='Weight decay (L2 penalty).')
 # WRN Architecture
@@ -56,8 +58,6 @@ parser.add_argument('--select', type=int, default=1)
 parser.add_argument('--sample_from', type=int, default=10000)
 parser.add_argument('--loss_weight', type=float, default=0.1)
 
-
-
 args = parser.parse_args()
 
 state = {k: v for k, v in args._get_kwargs()}
@@ -69,18 +69,41 @@ np.random.seed(1)
 # mean and standard deviation of channels of CIFAR-10 images
 mean = [x / 255 for x in [125.3, 123.0, 113.9]]
 std = [x / 255 for x in [63.0, 62.1, 66.7]]
-
-train_transform = trn.Compose([trn.RandomHorizontalFlip(), trn.RandomCrop(32, padding=4),
+inp_size = 32
+train_transform = trn.Compose([trn.RandomHorizontalFlip(), trn.Resize((inp_size, inp_size)), trn.RandomCrop(inp_size, padding=4),
                                trn.ToTensor(), trn.Normalize(mean, std)])
-test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
+test_transform = trn.Compose([trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)])
 
 if args.dataset == 'cifar10':
-    train_data = dset.CIFAR10('/nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
-    test_data = dset.CIFAR10('/nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
+    train_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
+    test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
     num_classes = 10
+elif args.dataset == 'imbacifar':
+    imbalance = [1, 1, 1, 1, 1, 0.5, 1, 1, 1, 1]
+    train_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=True,
+                                    transform=test_transform, imbalance=imbalance)
+    test_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform)
+    num_classes = 10
+elif args.dataset == 'ships':
+    root_dir = r'ship2/train_set'
+    val_dir = r'ship2/val_set'
+    # mean = [x / 255 for x in [118.1, 113.5, 111.5]]
+    # std = [x / 255 for x in [51.7, 48.5, 50.6]]
+    # train_transform = trn.Compose(
+    #     [trn.RandomHorizontalFlip(), trn.Resize((inp_size, inp_size)), trn.RandomCrop(inp_size, padding=4),
+    #      trn.ToTensor(), trn.Normalize(mean, std)])
+    test_transform = trn.Compose([trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)])
+
+    train_data = ShippingLabClassification(root_dir=root_dir,
+                                        transform=train_transform)
+
+    test_data = ShippingLabClassification(root_dir=val_dir,
+                                        transform=test_transform)
+
+    num_classes = len(train_data.classes)
 else:
-    train_data = dset.CIFAR100('/nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
-    test_data = dset.CIFAR100('/nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
+    train_data = dset.CIFAR100('nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
+    test_data = dset.CIFAR100('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
     num_classes = 100
 
 
@@ -130,17 +153,15 @@ if args.ngpu > 0:
 
 cudnn.benchmark = True  # fire on all cylinders
 
-if args.dataset == 'cifar10':
-    num_classes = 10
-else:
-    num_classes = 100
 weight_energy = torch.nn.Linear(num_classes, 1).cuda()
 torch.nn.init.uniform_(weight_energy.weight)
-data_dict = torch.zeros(num_classes, args.sample_number, 342).cuda()
+multivariate_variables = 128
+data_dict = torch.zeros(num_classes, args.sample_number, multivariate_variables).cuda()
 number_dict = {}
 for i in range(num_classes):
     number_dict[i] = 0
-eye_matrix = torch.eye(342, device='cuda')
+#
+eye_matrix = torch.eye(multivariate_variables, device='cuda')
 logistic_regression = torch.nn.Linear(1, 2)
 logistic_regression = logistic_regression.cuda()
 optimizer = torch.optim.SGD(
@@ -153,7 +174,15 @@ def cosine_annealing(step, total_steps, lr_max, lr_min):
     return lr_min + (lr_max - lr_min) * 0.5 * (
             1 + np.cos(step / total_steps * np.pi))
 
-
+scheduler = None
+if args.model == 'wrn':
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: cosine_annealing(
+            step,
+            args.epochs * len(train_loader),
+            1,  # since lr_lambda computes multiplicative factor
+            1e-6 / args.learning_rate))
 
 def log_sum_exp(value, dim=None, keepdim=False):
     """Numerically stable implementation of the operation
@@ -182,7 +211,7 @@ def log_sum_exp(value, dim=None, keepdim=False):
 def train(epoch):
     net.train()  # enter train mode
     loss_avg = 0.0
-    for data, target in train_loader:
+    for data, target in tqdm(train_loader):
         data, target = data.cuda(), target.cuda()
 
         # forward
@@ -218,18 +247,23 @@ def train(epoch):
                                                data_dict[index].mean(0).view(1, -1)), 0)
 
             ## add the variance.
-            temp_precision = torch.mm(X.t(), X) / len(X)
+            temp_precision = torch.mm(X.t(), X) / len(X) # why is this the covariance?
             temp_precision += 0.0001 * eye_matrix
 
             for index in range(num_classes):
                 new_dis = torch.distributions.multivariate_normal.MultivariateNormal(
                     mean_embed_id[index], covariance_matrix=temp_precision)
+
+                # how is this sampling from outside the distribution?
+                #we sample from the distribution.
                 negative_samples = new_dis.rsample((args.sample_from,))
+                # we get the log probability of the samples.
                 prob_density = new_dis.log_prob(negative_samples)
                 # breakpoint()
                 # index_prob = (prob_density < - self.threshold).nonzero().view(-1)
                 # keep the data in the low density area.
-                cur_samples, index_prob = torch.topk(- prob_density, args.select)
+                # by taking the args.select lowest log probs and adding them as an outlier.
+                cur_samples, index_prob = torch.topk(-prob_density, args.select)
                 if index == 0:
                     ood_samples = negative_samples[index_prob]
                 else:
@@ -237,10 +271,14 @@ def train(epoch):
             if len(ood_samples) != 0:
                 # add some gaussian noise
                 # ood_samples = self.noise(ood_samples)
-                # energy_score_for_fg = 1 * torch.logsumexp(predictions[0][selected_fg_samples][:, :-1] / 1, 1)
+
+                # log_sum_exp of the actual data
                 energy_score_for_fg = log_sum_exp(x, 1)
+
+                # run fully connected layer on ood samples.
                 predictions_ood = net.fc(ood_samples)
-                # energy_score_for_bg = 1 * torch.logsumexp(predictions_ood[0][:, :-1] / 1, 1)
+
+                # log_sum_exp of the ood samples
                 energy_score_for_bg = log_sum_exp(predictions_ood, 1)
 
                 input_for_lr = torch.cat((energy_score_for_fg, energy_score_for_bg), -1)
@@ -250,7 +288,8 @@ def train(epoch):
                 criterion = torch.nn.CrossEntropyLoss()
                 output1 = logistic_regression(input_for_lr.view(-1, 1))
                 lr_reg_loss = criterion(output1, labels_for_lr.long())
-
+                #mse = torch.nn.MSELoss()
+                #lr_reg_loss = mse(input_for_lr, labels_for_lr)
                 # if epoch % 5 == 0:
                 #     print(lr_reg_loss)
         else:
@@ -264,13 +303,15 @@ def train(epoch):
         # backward
 
         optimizer.zero_grad()
+
         loss = F.cross_entropy(x, target)
         # breakpoint()
         loss += args.loss_weight * lr_reg_loss
         loss.backward()
 
         optimizer.step()
-        # scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
 
         # exponential moving average
         loss_avg = loss_avg * 0.8 + float(loss) * 0.2
@@ -284,7 +325,7 @@ def test():
     loss_avg = 0.0
     correct = 0
     with torch.no_grad():
-        for data, target in test_loader:
+        for data, target in tqdm(test_loader):
             data, target = data.cuda(), target.cuda()
 
             # forward
@@ -330,12 +371,14 @@ for epoch in range(start_epoch, args.epochs):
 
     train(epoch)
     test()
-    if epoch == 49:
-        optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.1
-    elif epoch == 74:
-        optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.01
-    elif epoch == 89:
-        optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.001
+
+    if args.model == 'dense':
+        if epoch == 49:
+            optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.1
+        elif epoch == 74:
+            optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.01
+        elif epoch == 89:
+            optimizer.param_groups[0]['lr'] *= args.learning_rate * 0.001
 
     # Save model
     torch.save(net.state_dict(),

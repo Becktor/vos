@@ -1,8 +1,8 @@
-from __future__ import division,print_function
+from __future__ import division, print_function
 
-#matplotlib inline
-#load_ext autoreload
-#autoreload 2
+# matplotlib inline
+# load_ext autoreload
+# autoreload 2
 
 import sys
 from tqdm import tqdm_notebook as tqdm
@@ -25,19 +25,22 @@ from torch.nn.parameter import Parameter
 import calculate_log as callog
 
 import warnings
+
 warnings.filterwarnings('ignore')
 
-
-torch.cuda.set_device(1) #Select the GPU
+torch.cuda.set_device(1)  # Select the GPU
 
 
 def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
 
+
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
 # from .route import *
 
 
@@ -49,11 +52,13 @@ class BasicBlock(nn.Module):
         self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
                                padding=1, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
         if self.droprate > 0:
             out = F.dropout(out, p=self.droprate, training=self.training)
         return torch.cat([x, out], 1)
+
 
 class BottleneckBlock(nn.Module):
     def __init__(self, in_planes, out_planes, dropRate=0.0):
@@ -67,6 +72,7 @@ class BottleneckBlock(nn.Module):
         self.conv2 = nn.Conv2d(inter_planes, out_planes, kernel_size=3, stride=1,
                                padding=1, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         torch_model.record(x)
         out = self.conv1(self.relu(self.bn1(x)))
@@ -81,6 +87,7 @@ class BottleneckBlock(nn.Module):
             torch_model.record(out)
         return torch.cat([x, out], 1)
 
+
 class TransitionBlock(nn.Module):
     def __init__(self, in_planes, out_planes, dropRate=0.0):
         super(TransitionBlock, self).__init__()
@@ -89,34 +96,39 @@ class TransitionBlock(nn.Module):
         self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1,
                                padding=0, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
         if self.droprate > 0:
             out = F.dropout(out, p=self.droprate, inplace=False, training=self.training)
         return F.avg_pool2d(out, 2)
 
+
 class DenseBlock(nn.Module):
     def __init__(self, nb_layers, in_planes, growth_rate, block, dropRate=0.0):
         super(DenseBlock, self).__init__()
         self.layer = self._make_layer(block, in_planes, growth_rate, nb_layers, dropRate)
+
     def _make_layer(self, block, in_planes, growth_rate, nb_layers, dropRate):
         layers = []
         for i in range(nb_layers):
-            layers.append(block(in_planes+i*growth_rate, growth_rate, dropRate))
+            layers.append(block(in_planes + i * growth_rate, growth_rate, dropRate))
         return nn.Sequential(*layers)
+
     def forward(self, x):
         return self.layer(x)
 
+
 class DenseNet3(nn.Module):
     def __init__(self, depth, num_classes, growth_rate=12,
-                 reduction=0.5, bottleneck=True, dropRate=0.0, normalizer = None,
-                 out_classes = 100, k=None, info=None):
+                 reduction=0.5, bottleneck=True, dropRate=0.0, normalizer=None,
+                 out_classes=100, k=None, info=None):
         super(DenseNet3, self).__init__()
 
         in_planes = 2 * growth_rate
         n = (depth - 4) / 3
         if bottleneck == True:
-            n = int(n/2)
+            n = int(n / 2)
             block = BottleneckBlock
         else:
             block = BasicBlock
@@ -125,22 +137,21 @@ class DenseNet3(nn.Module):
                                padding=1, bias=False)
         # 1st block
         self.block1 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
-        self.trans1 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
-        in_planes = int(math.floor(in_planes*reduction))
+        in_planes = int(in_planes + n * growth_rate)
+        self.trans1 = TransitionBlock(in_planes, int(math.floor(in_planes * reduction)), dropRate=dropRate)
+        in_planes = int(math.floor(in_planes * reduction))
         # 2nd block
         self.block2 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
-        self.trans2 = TransitionBlock(in_planes, int(math.floor(in_planes*reduction)), dropRate=dropRate)
-        in_planes = int(math.floor(in_planes*reduction))
+        in_planes = int(in_planes + n * growth_rate)
+        self.trans2 = TransitionBlock(in_planes, int(math.floor(in_planes * reduction)), dropRate=dropRate)
+        in_planes = int(math.floor(in_planes * reduction))
         # 3rd block
         self.block3 = DenseBlock(n, in_planes, growth_rate, block, dropRate)
-        in_planes = int(in_planes+n*growth_rate)
+        in_planes = int(in_planes + n * growth_rate)
         # global average pooling and classifier
         self.bn1 = nn.BatchNorm2d(in_planes)
         self.relu = nn.ReLU(inplace=True)
         self.collecting = False
-
 
         if k is None:
             self.fc = nn.Linear(in_planes, num_classes)
@@ -193,9 +204,9 @@ class DenseNet3(nn.Module):
     def feature_list(self, x):
         if self.normalizer is not None:
             x = x.clone()
-            x[:,0,:,:] = (x[:,0,:,:] - self.normalizer.mean[0]) / self.normalizer.std[0]
-            x[:,1,:,:] = (x[:,1,:,:] - self.normalizer.mean[1]) / self.normalizer.std[1]
-            x[:,2,:,:] = (x[:,2,:,:] - self.normalizer.mean[2]) / self.normalizer.std[2]
+            x[:, 0, :, :] = (x[:, 0, :, :] - self.normalizer.mean[0]) / self.normalizer.std[0]
+            x[:, 1, :, :] = (x[:, 1, :, :] - self.normalizer.mean[1]) / self.normalizer.std[1]
+            x[:, 2, :, :] = (x[:, 2, :, :] - self.normalizer.mean[2]) / self.normalizer.std[2]
 
         out_list = []
         out = self.conv1(x)
@@ -215,9 +226,9 @@ class DenseNet3(nn.Module):
     def intermediate_forward(self, x, layer_index):
         if self.normalizer is not None:
             x = x.clone()
-            x[:,0,:,:] = (x[:,0,:,:] - self.normalizer.mean[0]) / self.normalizer.std[0]
-            x[:,1,:,:] = (x[:,1,:,:] - self.normalizer.mean[1]) / self.normalizer.std[1]
-            x[:,2,:,:] = (x[:,2,:,:] - self.normalizer.mean[2]) / self.normalizer.std[2]
+            x[:, 0, :, :] = (x[:, 0, :, :] - self.normalizer.mean[0]) / self.normalizer.std[0]
+            x[:, 1, :, :] = (x[:, 1, :, :] - self.normalizer.mean[1]) / self.normalizer.std[1]
+            x[:, 2, :, :] = (x[:, 2, :, :] - self.normalizer.mean[2]) / self.normalizer.std[2]
 
         out = self.conv1(x)
         if layer_index == 1:
@@ -236,9 +247,9 @@ class DenseNet3(nn.Module):
     def penultimate_forward(self, x):
         if self.normalizer is not None:
             x = x.clone()
-            x[:,0,:,:] = (x[:,0,:,:] - self.normalizer.mean[0]) / self.normalizer.std[0]
-            x[:,1,:,:] = (x[:,1,:,:] - self.normalizer.mean[1]) / self.normalizer.std[1]
-            x[:,2,:,:] = (x[:,2,:,:] - self.normalizer.mean[2]) / self.normalizer.std[2]
+            x[:, 0, :, :] = (x[:, 0, :, :] - self.normalizer.mean[0]) / self.normalizer.std[0]
+            x[:, 1, :, :] = (x[:, 1, :, :] - self.normalizer.mean[1]) / self.normalizer.std[1]
+            x[:, 2, :, :] = (x[:, 2, :, :] - self.normalizer.mean[2]) / self.normalizer.std[2]
 
         out = self.conv1(x)
         out = self.trans1(self.block1(out))
@@ -274,7 +285,7 @@ class DenseNet3(nn.Module):
             batch = data[i:i + 64].cuda()
             feat_list = self.gram_feature_list(batch)
 
-            for L, feat_L in enumerate(feat_list):#96, x, x, x
+            for L, feat_L in enumerate(feat_list):  # 96, x, x, x
                 if L == len(mins):
                     mins.append([None] * len(power))
                     maxs.append([None] * len(power))
@@ -316,6 +327,8 @@ class DenseNet3(nn.Module):
         deviations = np.concatenate(deviations, axis=0)
 
         return deviations
+
+
 # class BasicBlock(nn.Module):
 #     def __init__(self, in_planes, out_planes, stride, dropRate=0.0):
 #         super(BasicBlock, self).__init__()
@@ -518,12 +531,12 @@ class DenseNet3(nn.Module):
 # torch_model = WideResNet(40, 10, 2, dropRate=0.0)
 
 torch_model = DenseNet3(100, 10, 12, reduction=0.5, bottleneck=True, dropRate=0.0, normalizer=None,
-                     k=None, info=None)
-
+                        k=None, info=None)
 
 # torch_model = ResNet(BasicBlock, [3, 4, 6, 3], num_classes=10)
 # torch_model.load('/afs/cs.wisc.edu/u/x/f/xfdu/workspace/energy_ood/CIFAR/snapshots/baseline/cifar10_wrn_baseline_0.1_1000_40_1_10000_epoch_99.pt')
-torch_model.load('/afs/cs.wisc.edu/u/x/f/xfdu/workspace/energy_ood/CIFAR/snapshots/baseline/cifar10_dense_baseline_dense_0.1_1000_40_1_10000_epoch_99.pt')
+torch_model.load(
+    '/afs/cs.wisc.edu/u/x/f/xfdu/workspace/energy_ood/CIFAR/snapshots/baseline/cifar10_dense_baseline_dense_0.1_1000_40_1_10000_epoch_99.pt')
 
 torch_model.cuda()
 torch_model.params = list(torch_model.parameters())
@@ -558,15 +571,14 @@ test_loader = torch.utils.data.DataLoader(
     batch_size=batch_size)
 
 data_train = list(torch.utils.data.DataLoader(
-        datasets.CIFAR10('/nobackup-slow/dataset/cifarpy', train=True, download=True,
-                       transform=transform_test),
-        batch_size=1, shuffle=False))
+    datasets.CIFAR10('/nobackup-slow/dataset/cifarpy', train=True, download=True,
+                     transform=transform_test),
+    batch_size=1, shuffle=False))
 
 data = list(torch.utils.data.DataLoader(
     datasets.CIFAR10('/nobackup-slow/dataset/cifarpy', train=False, download=True,
-                   transform=transform_test),
+                     transform=transform_test),
     batch_size=1, shuffle=False))
-
 
 torch_model.eval()
 # correct = 0
@@ -580,6 +592,7 @@ torch_model.eval()
 
 import torchvision.transforms as trn
 import torchvision.datasets as dset
+
 if __package__ is None:
     import sys
     from os import path
@@ -588,27 +601,26 @@ if __package__ is None:
     import utils.svhn_loader as svhn
 cifar100 = list(torch.utils.data.DataLoader(
     datasets.CIFAR100('/nobackup-slow/dataset/cifarpy', train=False, download=True,
-                   transform=transform_test),
+                      transform=transform_test),
     batch_size=1, shuffle=True))
 mean_my = [x / 255 for x in [125.3, 123.0, 113.9]]
 std_my = [x / 255 for x in [63.0, 62.1, 66.7]]
 texture = list(dset.ImageFolder(root="/nobackup-slow/dataset/dtd/images",
-                            transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
-                                                   trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
+                                transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
+                                                       trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
 svhn = list(svhn.SVHN(root='/nobackup-slow/dataset/svhn/', split="test",
-                     transform=trn.Compose(
-                         [#trn.Resize(32),
-                         trn.ToTensor(), trn.Normalize(mean_my, std_my)]), download=False))
+                      transform=trn.Compose(
+                          [  # trn.Resize(32),
+                              trn.ToTensor(), trn.Normalize(mean_my, std_my)]), download=False))
 places365 = list(dset.ImageFolder(root="/nobackup-slow/dataset/places365/",
-                            transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
-                                                   trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
+                                  transform=trn.Compose([trn.Resize(32), trn.CenterCrop(32),
+                                                         trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
 lsunc = list(dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_C",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
+                              transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
 lsunr = list(dset.ImageFolder(root="/nobackup-slow/dataset/LSUN_resize",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
+                              transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
 isun = list(dset.ImageFolder(root="/nobackup-slow/dataset/iSUN",
-                            transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
-
+                             transform=trn.Compose([trn.ToTensor(), trn.Normalize(mean_my, std_my)])))
 
 train_preds = []
 train_confs = []
@@ -698,7 +710,6 @@ class Detector:
 
     def compute_minmaxs(self, data_train, POWERS=[10]):
         for PRED in tqdm(self.classes):
-
             train_indices = np.where(np.array(train_preds) == PRED)[0]
             train_PRED = torch.squeeze(torch.stack([data_train[i][0] for i in train_indices]), dim=1)
             mins, maxs = torch_model.get_min_max(train_PRED, power=POWERS)
@@ -719,7 +730,8 @@ class Detector:
             mins = cuda(self.mins[PRED])
             maxs = cuda(self.maxs[PRED])
 
-            test_deviations = torch_model.get_deviations(test_PRED, power=POWERS, mins=mins, maxs=maxs) / test_confs_PRED[:, np.newaxis]
+            test_deviations = torch_model.get_deviations(test_PRED, power=POWERS, mins=mins,
+                                                         maxs=maxs) / test_confs_PRED[:, np.newaxis]
             cpu(mins)
             cpu(maxs)
             if all_test_deviations is None:
@@ -794,14 +806,14 @@ detector.compute_test_deviations(POWERS=range(1, 11))
 # print("CIFAR-100")
 # c100_results = detector.compute_ood_deviations(cifar100,POWERS=range(1,11))
 print('texture')
-c100_results = detector.compute_ood_deviations(texture,POWERS=range(1,11))
+c100_results = detector.compute_ood_deviations(texture, POWERS=range(1, 11))
 print('places365')
-places365_results = detector.compute_ood_deviations(places365,POWERS=range(1,11))
+places365_results = detector.compute_ood_deviations(places365, POWERS=range(1, 11))
 print('svhn')
-svhn_results = detector.compute_ood_deviations(svhn,POWERS=range(1,11))
+svhn_results = detector.compute_ood_deviations(svhn, POWERS=range(1, 11))
 print('lsunr')
-lsunr_results = detector.compute_ood_deviations(lsunr,POWERS=range(1,11))
+lsunr_results = detector.compute_ood_deviations(lsunr, POWERS=range(1, 11))
 print('lsunc')
-lsunc_results = detector.compute_ood_deviations(lsunc,POWERS=range(1,11))
+lsunc_results = detector.compute_ood_deviations(lsunc, POWERS=range(1, 11))
 print('isun')
-isun_results = detector.compute_ood_deviations(isun,POWERS=range(1,11))
+isun_results = detector.compute_ood_deviations(isun, POWERS=range(1, 11))

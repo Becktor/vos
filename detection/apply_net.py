@@ -36,7 +36,7 @@ def main(args):
     # Make sure only 1 data point is processed at a time. This simulates
     # deployment.
     cfg.defrost()
-    cfg.DATALOADER.NUM_WORKERS = 32
+    cfg.DATALOADER.NUM_WORKERS = 20
     cfg.SOLVER.IMS_PER_BATCH = 1
 
     cfg.MODEL.DEVICE = device.type

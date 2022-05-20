@@ -74,12 +74,12 @@ train_transform = trn.Compose([trn.RandomHorizontalFlip(), trn.RandomCrop(32, pa
 test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
 
 if args.dataset == 'cifar10':
-    train_data = dset.CIFAR10('/nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
-    test_data = dset.CIFAR10('/nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
+    train_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
+    test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
     num_classes = 10
 else:
-    train_data = dset.CIFAR100('/nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
-    test_data = dset.CIFAR100('/nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
+    train_data = dset.CIFAR100('nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
+    test_data = dset.CIFAR100('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
     num_classes = 100
 
 

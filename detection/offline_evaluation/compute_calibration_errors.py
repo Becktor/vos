@@ -1,4 +1,4 @@
-import calibration as cal
+import sklearn.calibration as cal
 import os
 import pickle
 import torch
