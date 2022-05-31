@@ -3,6 +3,8 @@ import sys
 import os
 import pickle
 import argparse
+
+import scipy.special
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
@@ -19,6 +21,7 @@ import sys
 from os import path
 from data_loader import ShippingLabClassification, Cifar10_Imbalanced
 import matplotlib
+from tqdm import tqdm
 
 matplotlib.use('WebAgg')
 import matplotlib.pyplot as plt
@@ -28,6 +31,10 @@ import utils.display_results as dr
 import utils.svhn_loader as svhn
 import utils.lsun_loader as lsun_loader
 import utils.score_calculation as lib
+from scipy.stats import multivariate_normal
+import sys
+
+gettrace = getattr(sys, 'gettrace', None)
 
 parser = argparse.ArgumentParser(description='Evaluates a CIFAR OOD Detector',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -64,12 +71,16 @@ inp_size = 32
 test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
 
 if 'cifar10_' in args.method_name:
-    test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform)
+    # test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform)
+    imbalance = [1, 1, 1, 1, 1, 0.3, 1, 1, 0.05, 0.1]
+    test_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform,
+                                   imbalance=imbalance)
     label_mapping = {y: x for x, y in test_data.class_to_idx.items()}
     num_classes = 10
 elif 'imbacifar_' in args.method_name:
-    imbalance = [0, 0, 0, 999, 0, 0, 0, 0, 0, 0]
-    test_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, imbalance=imbalance)
+    imbalance = [1, 1, 1, 1, 1, 0.05, 1, 1, 1, 0.1]
+    test_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform,
+                                   imbalance=imbalance)
     label_mapping = {y: x for x, y in test_data.class_to_idx.items()}
     num_classes = 10
 elif 'ships_' in args.method_name:
@@ -143,8 +154,31 @@ concat = lambda x: np.concatenate(x, axis=0)
 to_np = lambda x: x.data.cpu().numpy()
 
 
-def calc_norms(label_mapping, lbls_score):
+def calc_norms(label_mapping, lbls_score, scale=0.9):
     norms = []
+    u = in_score.mean()
+    s = in_score.std()
+    gd = torch.distributions.normal.Normal(u, s)
+    means = []
+    var = []
+    for x in range(len(label_mapping.keys())):
+        walu = np.stack(lbls_score[lbls_score[:, 0] == x][:, 2])
+        #n_walu = 2*(walu-np.min(walu, axis=1, keepdims=True))/np.ptp(walu, axis=1, keepdims=True)-1
+        #s_walu = scipy.special.softmax(n_walu, axis=1)
+        mm = np.mean(walu, axis=0)
+        means.append(mm)
+        diff = (walu - mm)
+        covar_ = diff.T @ diff / len(diff)
+        covar_ += np.eye(len(covar_)) * 1e-5
+        var.append(covar_)
+
+    mvns = []
+    mvns2 = []
+    for m, c in zip(means, var):
+        mvn = torch.distributions.multivariate_normal.MultivariateNormal(torch.tensor(m), torch.tensor(c))
+        mvns2.append(multivariate_normal(m, c))
+        mvns.append(mvn)
+
     for x in range(len(label_mapping.keys())):
         lbl_score = lbls_score[lbls_score[:, 0] == x][:, 1]
         u = lbl_score.mean()
@@ -155,23 +189,28 @@ def calc_norms(label_mapping, lbls_score):
         plt.savefig(f'plots/{x}_hist.png')
         plt.clf()
 
-    u = in_score.mean()
-    s = in_score.std()
-    gd = torch.distributions.normal.Normal(u, s)
     plt.hist(in_score * -1, bins=20, alpha=0.6, density=True)
     plt.title(f"global hist:")
     plt.savefig(f'plots/global_hist.png')
     plt.clf()
-    return gd, norms
+    return gd, norms, mvns, mvns2
 
 
-def get_ood_scores(loader, in_dist=False, cifar=False):
+def flatten(t):
+    return np.array([item for sublist in t for item in sublist], dtype=object)
+
+
+def get_ood_scores(loader, in_dist=False):
     _score = []
+    _targets = []
+    _rs = []
+    _soft_score = []
     _right_score = []
     _wrong_score = []
     _lbl_score = []
     _pred_score = []
-
+    _outputs = []
+    _softmaxs = []
     with torch.no_grad():
         for batch_idx, (data, target) in enumerate(loader):
             if batch_idx >= ood_num_examples // args.test_bs and in_dist is False:
@@ -187,15 +226,22 @@ def get_ood_scores(loader, in_dist=False, cifar=False):
             else:
                 if args.score == 'energy':
                     _score.append(-to_np((args.T * torch.logsumexp(output / args.T, dim=1))))
+                    _soft_score.append(-np.max(smax, axis=1))
+                    _outputs.append(to_np(output))
+
                 else:  # original MSP and Mahalanobis (but Mahalanobis won't need this returned)
                     _score.append(-np.max(smax, axis=1))
             preds = np.argmax(smax, axis=1)
-            _pred_score.append(list(zip(preds, _score[-1])))
+            _pred_score.append(list(zip(preds, _score[-1], _outputs[-1])))
+            _softmaxs.append(smax)
             if in_dist:
                 targets = target.numpy().squeeze()
                 right_indices = preds == targets
                 wrong_indices = np.invert(right_indices)
-                _lbl_score.append(list(zip(targets[right_indices], _score[-1][right_indices])))
+                _lbl_score.append(
+                    list(zip(targets[right_indices], _score[-1][right_indices], _outputs[-1][right_indices])))
+                _targets.append(preds)
+                _rs.append(right_indices)
                 if args.use_xent:
                     _right_score.append(to_np((output.mean(1) - torch.logsumexp(output, dim=1)))[right_indices])
                     _wrong_score.append(to_np((output.mean(1) - torch.logsumexp(output, dim=1)))[wrong_indices])
@@ -215,10 +261,11 @@ def get_ood_scores(loader, in_dist=False, cifar=False):
     if in_dist:
 
         return concat(_score).copy(), concat(_right_score).copy(), \
-               concat(_wrong_score).copy(), concat(_lbl_score).copy()
+               concat(_wrong_score).copy(), flatten(_lbl_score).copy(), \
+               concat(_targets).copy(), concat(_rs).copy(), concat(_outputs).copy()
 
     else:
-        return concat(_score)[:ood_num_examples].copy(), concat(_pred_score).copy()
+        return concat(_score)[:ood_num_examples].copy(), flatten(_pred_score).copy()
 
 
 def plot_with_energy(img, smax, lbl, energy, name):
@@ -273,59 +320,153 @@ elif args.score == 'M':
                                          num_batches, in_dist=True)
     print(in_score[-3:], in_score[-103:-100])
 else:
-    in_score, right_score, wrong_score, lbls_score = get_ood_scores(test_loader, in_dist=True)
+    in_score, right_score, wrong_score, lbls_score, lbls, rs, outs = get_ood_scores(test_loader, in_dist=True)
 
-gd, norms = calc_norms(label_mapping, lbls_score)
-
+gd, norms, mvn, mmvn = calc_norms(label_mapping, lbls_score)
+max_mean = min([x.mean for x in norms])
+print(max_mean)
 certs = []
-for i in lbls_score:
-    idx, val = i
+id_pred_certs = {}
+id_gd_pred_certs = {}
+ood_pred_certs = {}
+ood_gd_pred_certs = {}
+for x in np.unique(lbls):
+    id_pred_certs[x] = []
+    id_gd_pred_certs[x] = []
+    ood_pred_certs[x] = []
+    ood_gd_pred_certs[x] = []
+mnv_nm = {}
+for i, j in enumerate(mvn):
+    mnv_nm_i = {}
+    for v in range(j.mean.shape[0]):
+        mnv_nm_i[v] = torch.distributions.normal.Normal(j.mean[v], j.covariance_matrix[v, v])
+    mnv_nm[i] = mnv_nm_i
+
+
+rss, nss = [], []
+for i in tqdm(zip(lbls, in_score, outs)):
+    idx, val, o = i
     idx = int(idx)
+    sto = torch.tensor(o)
     val = torch.tensor(val)
-    certs.append(gd.cdf((val * norms[idx].mean / gd.mean)).numpy())
+    to_idx = (sto > 0).nonzero().squeeze(1)
+    cdf_slice = []
+    for j in to_idx:
+        nm = mnv_nm[idx][int(j)]
+        if j == idx:
+            #cdf_slice.append(1-nm.cdf(sto[j]))
+            continue
+        cdf_slice.append(nm.cdf(sto[j]))
+    if len(cdf_slice) == 0:
+        conf_scale = 1
+        sm_diff = 1
+    else:
+        conf_scale = torch.stack(cdf_slice).mean()
+        sm_diff = torch.exp(mvn[idx].log_prob(sto) - mvn[idx].log_prob(mvn[idx].mean + mvn[idx].covariance_matrix[idx]))
+    scale = (sm_diff + conf_scale)/2
+    tv = gd.cdf(val * scale)
+    inp_val = tv
+    certs.append(inp_val)
 
-#in_score = np.array(certs)
 
+in_score = np.array(certs)
 num_right = len(right_score)
 num_wrong = len(wrong_score)
+
 print('Error Rate {:.2f}'.format(100 * num_wrong / (num_wrong + num_right)))
 print('Precision {:.2f}'.format(100 * (num_right / (num_wrong + num_right))))
 # /////////////// End Detection Prelims ///////////////
 
-print('\nUsing CIFAR-10 as typical data') if num_classes == 10 else print('\nUsing CIFAR-100 as typical data')
+if 'cifar10_' in args.method_name:
+    print('\nUsing CIFAR-10 as typical data')
+elif 'imbacifar_' in args.method_name:
+    print('\nUsing Imbalanced-CIFAR-10 as typical data')
+elif 'ships_' in args.method_name:
+    print('\nUsing Ships as typical data')
+else:
+    print('\nUsing CIFAR-100 as typical data')
 
 # /////////////// Error Detection ///////////////
 
 print('\n\nError Detection')
 dr.show_performance_fpr(wrong_score, right_score, method_name=args.method_name)
+# dr.show_performance_fpr(np.array(nss), np.array(rss), method_name=args.method_name)
 
 # /////////////// OOD Detection ///////////////
 auroc_list, aupr_list, fpr_list = [], [], []
 
 
-def get_and_print_results(ood_loader, num_to_avg=args.num_to_avg):
+def get_and_print_results(ood_loader, num_to_avg=args.num_to_avg, class_wise=False):
     aurocs, auprs, fprs = [], [], []
-    for _ in range(num_to_avg):
+    for _ in tqdm(range(num_to_avg)):
         if args.score == 'Odin':
             out_score = lib.get_ood_scores_odin(ood_loader, net, args.test_bs, ood_num_examples, args.T, args.noise)
         elif args.score == 'M':
             out_score = lib.get_Mahalanobis_score(net, ood_loader, num_classes, sample_mean, precision, count - 1,
                                                   args.noise, num_batches)
         else:
-            out_score, t_lbl_score = get_ood_scores(ood_loader, cifar=True)
+            out_score, t_pred_score = get_ood_scores(ood_loader)
             certs = []
-            for i in t_lbl_score:
-                idx, val = i
-                idx = int(idx)
-                val = torch.tensor(val)
-                certs.append(gd.cdf((val * norms[idx].mean / gd.mean)).numpy())
 
-#            out_score = np.array(certs)
+            for i in t_pred_score:
+                idx, val, o = i
+                idx = int(idx)
+                to = torch.tensor(o)
+                sto = torch.softmax(to, dim=0)
+                val = torch.tensor(val)
+                to_idx = (sto > 0).nonzero().squeeze(1)
+                cdf_slice = []
+                for j in to_idx:
+                    nm = mnv_nm[idx][int(j)]
+                    if j == idx:
+                        #cdf_slice.append(1 - nm.cdf(sto[j]))
+                        continue
+                    cdf_slice.append(nm.cdf(sto[j]))
+                if len(cdf_slice) == 0:
+                    conf_scale = 1
+                    sm_diff = 1
+                else:
+                    conf_scale = torch.stack(cdf_slice).mean()
+                    sm_diff = torch.exp(mvn[idx].log_prob(sto) - mvn[idx].log_prob(mvn[idx].mean + mvn[idx].covariance_matrix[idx]))
+                scale = (sm_diff + conf_scale) / 2
+                tv = gd.cdf(val * scale)
+                inp_val = tv
+                certs.append(inp_val)
+                ood_pred_certs[idx].append(inp_val)
+                # id_gd_pred_certs[idx].append(tvv)
+                # certs.append((gd.cdf(val * (norms[idx].stddev/norms[idx].mean) / (gd.stddev/gd.mean))).numpy())
+            out_score = np.array(certs)
 
         if args.out_as_pos:  # OE's defines out samples as positive
             measures = dr.get_measures(out_score, in_score)
         else:
-            measures = dr.get_measures(-in_score, -out_score)
+            if class_wise:
+                class_measures = []
+                cls_aurocs, cls_auprs, cls_fprs = [], [], []
+                sorted_idd = {}
+                sorted_ood = {}
+                weight = []
+                for x in np.unique(lbls):
+                    idd = np.array(id_pred_certs[x])
+                    g_idd = np.array(id_gd_pred_certs[x])
+                    ood = np.array(ood_pred_certs[x])
+                    g_ood = np.array(ood_gd_pred_certs[x])
+                    if ood.shape[0] == 0:
+                        ood = np.ones(1)
+                    measures = dr.get_measures(-idd, -ood)
+                    class_measures.append(measures)
+                    cls_aurocs.append(measures[0])
+                    cls_auprs.append(measures[1])
+                    cls_fprs.append(measures[2])
+                    weight.append(ood.shape[0] + idd.shape[0])
+                w = weight / np.array(weight).sum()
+                cls_aurocs_mean = np.sum(w * np.array(cls_aurocs))
+                cls_auprs_mean = np.sum(w * np.array(cls_auprs))
+                cls_fprs_mean = np.sum(w * np.array(cls_fprs))
+                measures = [cls_aurocs_mean, cls_auprs_mean, cls_fprs_mean]
+            else:
+                measures = dr.get_measures(-in_score, -out_score)
+
         aurocs.append(measures[0])
         auprs.append(measures[1])
         fprs.append(measures[2])
@@ -343,26 +484,44 @@ def get_and_print_results(ood_loader, num_to_avg=args.num_to_avg):
         dr.print_measures_fprs(auroc, aupr, fpr, args.method_name)
 
 
-if 'cifar10_' not in args.method_name:
-    # /////////////// CIFAR-10 ///////////////
-    ood_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False,
+#
+# if 'cifar10_' not in args.method_name:
+#     # /////////////// CIFAR-10 ///////////////
+#     ood_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False,
+#                             transform=trn.Compose(
+#                                 [trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
+#     ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True)
+#
+#     print('\n\nCIFAR-10 Detection')
+#     get_and_print_results(ood_loader)
+
+# /////////////// iSUN ///////////////
+ood_data = dset.ImageFolder(root="nobackup-slow/dataset/iSUN",
                             transform=trn.Compose(
                                 [trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
-    ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True)
+ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+                                         num_workers=1, pin_memory=True)
+print('\n\niSUN Detection')
+get_and_print_results(ood_loader)
 
-    print('\n\nCIFAR-10 Detection')
-    get_and_print_results(ood_loader)
+# /////////////// LSUN-C ///////////////
+ood_data = dset.ImageFolder(root="nobackup-slow/dataset/LSUN_C",
+                            transform=trn.Compose(
+                                [trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
+ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
+                                         num_workers=1, pin_memory=True)
+print('\n\nLSUN_C Detection')
+get_and_print_results(ood_loader)
 
 # /////////////// SVHN /////////////// # cropped and no sampling of the test set
 ood_data = svhn.SVHN(root='nobackup-slow/dataset/svhn/', split="test",
                      transform=trn.Compose(
-                         [   trn.Resize((inp_size, inp_size)),
-                             trn.ToTensor(), trn.Normalize(mean, std)]), download=True)
+                         [trn.Resize((inp_size, inp_size)),
+                          trn.ToTensor(), trn.Normalize(mean, std)]), download=True)
 ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
                                          num_workers=2, pin_memory=True)
 print('\n\nSVHN Detection')
 get_and_print_results(ood_loader)
-
 
 # /////////////// Textures ///////////////
 ood_data = dset.ImageFolder(root="nobackup-slow/dataset/dtd/images",
@@ -382,35 +541,19 @@ ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuf
 print('\n\nPlaces365 Detection')
 get_and_print_results(ood_loader)
 
-# /////////////// LSUN-C ///////////////
-ood_data = dset.ImageFolder(root="nobackup-slow/dataset/LSUN_C",
-                            transform=trn.Compose([trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=1, pin_memory=True)
-print('\n\nLSUN_C Detection')
-get_and_print_results(ood_loader)
-
 # /////////////// LSUN-R ///////////////
 ood_data = dset.ImageFolder(root="nobackup-slow/dataset/LSUN_resize",
-                            transform=trn.Compose([trn.Resize((inp_size,inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
+                            transform=trn.Compose(
+                                [trn.Resize((inp_size, inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
 ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
                                          num_workers=1, pin_memory=True)
 print('\n\nLSUN_Resize Detection')
-get_and_print_results(ood_loader)
-
-# /////////////// iSUN ///////////////
-ood_data = dset.ImageFolder(root="nobackup-slow/dataset/iSUN",
-                            transform=trn.Compose([trn.Resize((inp_size,inp_size)), trn.ToTensor(), trn.Normalize(mean, std)]))
-ood_loader = torch.utils.data.DataLoader(ood_data, batch_size=args.test_bs, shuffle=True,
-                                         num_workers=1, pin_memory=True)
-print('\n\niSUN Detection')
 get_and_print_results(ood_loader)
 
 # /////////////// Mean Results ///////////////
 
 print('\n\nMean Test Results!!!!!')
 dr.print_measures(np.mean(auroc_list), np.mean(aupr_list), np.mean(fpr_list), method_name=args.method_name)
-
 
 # /////////////// CIFAR-100 ///////////////
 
@@ -490,7 +633,6 @@ if 'cifar10_' in args.method_name:
     ood_data = dset.CIFAR100('nobackup-slow/dataset/cifar100', train=False, transform=test_transform)
 else:
     ood_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform)
-
 
 
 class GeomMeanOfPair(torch.utils.data.Dataset):

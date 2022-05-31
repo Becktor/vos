@@ -3,7 +3,8 @@ venvvos/*
 datasets/*
 *.png
 *.jpg
-
+*.jpeg
+dataset/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -157,6 +158,8 @@ dmypy.json
 *.pyc
 # Cython debug symbols
 cython_debug/
+snapshots/
+baseline/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
