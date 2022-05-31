@@ -10,6 +10,8 @@ import torchvision.transforms as trn
 import torchvision.datasets as dset
 import torch.nn.functional as F
 from tqdm import tqdm
+
+from classification.CIFAR.data_loader import Cifar10_Imbalanced
 from models.allconv import AllConvNet
 from models.wrn_virtual import WideResNet
 
@@ -24,7 +26,7 @@ if __package__ is None:
 parser = argparse.ArgumentParser(description='Trains a CIFAR Classifier',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100'],
-                    default='cifar10',
+                    default='imbacifar',
                     help='Choose between CIFAR-10, CIFAR-100.')
 parser.add_argument('--model', '-m', type=str, default='wrn',
                     choices=['allconv', 'wrn'], help='Choose architecture.')
@@ -56,7 +58,6 @@ parser.add_argument('--sample_from', type=int, default=10000)
 parser.add_argument('--loss_weight', type=float, default=0.1)
 
 
-
 args = parser.parse_args()
 
 state = {k: v for k, v in args._get_kwargs()}
@@ -75,6 +76,12 @@ test_transform = trn.Compose([trn.ToTensor(), trn.Normalize(mean, std)])
 
 if args.dataset == 'cifar10':
     train_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=True, transform=train_transform, download=True)
+    test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
+    num_classes = 10
+elif args.dataset == 'imbacifar':
+    imbalance = [1, 1, 1, 1, 1, 0.05, 1, 1, 1, 0.1]
+    train_data = Cifar10_Imbalanced('nobackup-slow/dataset/my_xfdu/cifarpy', train=True,
+                                    transform=test_transform, imbalance=imbalance)
     test_data = dset.CIFAR10('nobackup-slow/dataset/my_xfdu/cifarpy', train=False, transform=test_transform, download=True)
     num_classes = 10
 else:
@@ -129,8 +136,10 @@ if args.dataset == 'cifar10':
     num_classes = 10
 else:
     num_classes = 100
+
 weight_energy = torch.nn.Linear(num_classes, 1).cuda()
 torch.nn.init.uniform_(weight_energy.weight)
+
 data_dict = torch.zeros(num_classes, args.sample_number, 128).cuda()
 number_dict = {}
 for i in range(num_classes):

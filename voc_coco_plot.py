@@ -33,15 +33,22 @@ to_np = lambda x: x.data.cpu().numpy()
 id_data = pickle.load(open('detection/data/VOC-Detection/' + args.model + '/' + args.name + '/random_seed' + '_' + str(
     args.seed) + '/inference/voc_custom_val/standard_nms/corruption_level_0/probabilistic_scoring_res_odd_' + str(
     args.thres) + '.pkl', 'rb'))
+# ood_data = pickle.load(open('detection/data/VOC-Detection/' + args.model + '/' + args.name + '/random_seed' + '_' + str(
+#     args.seed) + '/inference/coco_ood_val/standard_nms/corruption_level_0/probabilistic_scoring_res_odd_' + str(
+#     args.thres) + '.pkl', 'rb'))
 ood_data = pickle.load(open('detection/data/VOC-Detection/' + args.model + '/' + args.name + '/random_seed' + '_' + str(
-    args.seed) + '/inference/coco_ood_val/standard_nms/corruption_level_0/probabilistic_scoring_res_odd_' + str(
+    args.seed) + '/inference/openimages_ood_val/standard_nms/corruption_level_0/probabilistic_scoring_res_odd_' + str(
     args.thres) + '.pkl', 'rb'))
+
+
+
 
 pp = 'detection/data/VOC-Detection/' + args.model + '/' + args.name + '/random_seed' + '_' + str(
     args.seed) + '/inference/voc_custom_val/standard_nms/corruption_level_0/'
 prediction_file_name = os.path.join(pp, 'coco_instances_results.json')
 predicted_instances = json.load(open(prediction_file_name, 'r'))
 scale = 0.75 #best so far
+
 def calc_norms(lbls_score, total_score):
     norms = []
     for x, y in lbls_score.items():
@@ -67,10 +74,14 @@ def calc_norms(lbls_score, total_score):
 def run_w_scale(scale):
     lbls_score = {}
     total_score = []
+    w_cnt =0
     for x in predicted_instances:
         iid, cid, bbox, score, i_f, _, _ = x.items()
         v = i_f[1][:-1]
-        if score[1] <= args.thres * scale:
+        if score[1] <= args.thres*scale:
+            continue
+        if cid[1]-1 != np.argmax(v):
+            w_cnt += 1
             continue
         neglogsum = -np.log(np.exp(v).sum())
         if cid[1] in lbls_score:
@@ -78,7 +89,7 @@ def run_w_scale(scale):
         else:
             lbls_score[cid[1]] = [neglogsum]
         total_score.append(neglogsum)
-
+    print('wrong_guesses: ', w_cnt)
     total_score = np.array(total_score)
     gd, norms = calc_norms(lbls_score, total_score)
     max_mean = min([n.mean for n in norms])
@@ -93,23 +104,27 @@ def run_w_scale(scale):
 
     assert len(id_data['inter_feat'][0]) == 21  # + 1024
     if args.energy:
-        class_lbl = id_data['predicted_cls_id'].unique().cpu().numpy()
+
         print(id_data.keys())
         id_score = -args.T * torch.logsumexp(torch.stack(id_data['inter_feat'])[:, :-1] / args.T, dim=1).cpu().data.numpy()
         pred_score = list(zip(id_data['predicted_cls_id'].cpu().data.numpy(), id_score))
-        u = id_score.mean()
-        s = id_score.std()
+
         certs = []
         for i in pred_score:
             idx, val = i
             idx = int(idx)
             val = torch.tensor(val)
-            certs.append((gd.cdf(val * (norms[idx].stddev/norms[idx].mean) / (gd.stddev/gd.mean))).numpy())
+            #certs.append(-(1-gd.cdf((val * norms[idx].mean / gd.mean))).numpy())
+            certs.append(-(1-gd.cdf(val * (norms[idx].stddev/norms[idx].mean) / (gd.stddev/gd.mean)).numpy()))
+
+
 
         id_score2 = np.array(certs)
 
         ood_score = -args.T * torch.logsumexp(torch.stack(ood_data['inter_feat'])[:, :-1] / args.T,
                                               dim=1).cpu().data.numpy()
+
+
         ood_pred_score = list(zip(ood_data['predicted_cls_id'].cpu().data.numpy(), ood_score))
 
         certs = []
@@ -117,7 +132,8 @@ def run_w_scale(scale):
             idx, val = i
             idx = int(idx)
             val = torch.tensor(val)
-            certs.append((gd.cdf(val * (norms[idx].stddev/norms[idx].mean) / (gd.stddev/gd.mean))).numpy())
+            #certs.append(-(1-gd.cdf((val * norms[idx].mean / gd.mean))).numpy())
+            certs.append(-(1-gd.cdf(val * (norms[idx].stddev/norms[idx].mean) / (gd.stddev/gd.mean))).numpy())
 
         ood_score2 = np.array(certs)
 
@@ -138,8 +154,18 @@ def run_w_scale(scale):
         print_measures(measures2[0], measures2[1], measures2[2], 'energy')
     else:
         print_measures(measures[0], measures[1], measures[2], 'msp')
+    return measures2
 
 
-for x in np.arange(0.1, 0.9, 0.1):
+rslts = []
+xs =[]
+for x in np.arange(0.5, 1.3, 0.05):
     print("running Scale:", x)
-    run_w_scale(x)
+    rslts.append(run_w_scale(x)[2]*100)
+    xs.append(x)
+
+print(rslts)
+plt.plot(xs, rslts)
+plt.title(f"threshold: {args.thres} times scale")
+plt.savefig(f'plots/thresh.png')
+plt.clf()

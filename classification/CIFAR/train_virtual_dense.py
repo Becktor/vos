@@ -247,8 +247,8 @@ def train(epoch):
                                                data_dict[index].mean(0).view(1, -1)), 0)
 
             ## add the variance.
-            temp_precision = torch.mm(X.t(), X) / len(X) # why is this the covariance?
-            temp_precision += 0.0001 * eye_matrix
+            temp_precision = torch.mm(X.t(), X) / len(X) # why is this the covariance? because we get variance between all samples
+            temp_precision += 0.0001 * eye_matrix # add a small number to the diagonal to avoid numerical instability.
 
             for index in range(num_classes):
                 new_dis = torch.distributions.multivariate_normal.MultivariateNormal(

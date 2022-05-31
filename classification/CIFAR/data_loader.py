@@ -320,7 +320,7 @@ class Cifar10_Imbalanced(dset.CIFAR10):
                                                  target_transform=target_transform,
                                                  download=download)
         if imbalance is None:
-            imbalance = np.ones(9)
+            imbalance = np.ones(10)
         np.random.seed(seed)
         nt, nd = [], []
         ls = []
